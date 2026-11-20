@@ -21,7 +21,7 @@ def bwt_from_sa(text, sa):
 class FmCheckpoints:
     """Rank checkpoints with exclusive-end indexing"""
 
-    def __init__(self, bwt, cpIval=128):
+    def __init__(self, bwt, cpIval):
         self.bwt = bwt
         self.cpIval = cpIval #space between checkpoints
         self.alphabet = sorted(set(bwt))
@@ -53,7 +53,7 @@ class FmCheckpoints:
 class FmIndex:
 
     @staticmethod
-    def downsample_sa(sa, n=32):
+    def downsample_sa(sa, n):
         """ Take only the suffix-array entries for every nth suffix.
             Sample SA entries by reference position.
             To save memory."""
@@ -62,7 +62,7 @@ class FmIndex:
             for row, pos in enumerate(sa)
             if pos % n == 0
         }
-    def __init__(self, text, cpIval=128, ssaIval=32):
+    def __init__(self, text, cpIval, ssaIval):
         start = time.perf_counter()
         text = (text.upper() + '$').encode('ascii')
         print(f"Text preparation: {time.perf_counter() - start:.2f} s")
@@ -164,7 +164,7 @@ def find_seed_hits(fm, seeds, max_hits):
     """Find exact seed matches and estimate read start positions."""
     hits = []
 
-    for readPos, seed in seeds:
+    for read_pos, seed in seeds:
         left, right = fm.range(seed)
 
         # Skip seeds occurring too often in the reference
@@ -172,10 +172,10 @@ def find_seed_hits(fm, seeds, max_hits):
             continue
 
         for row in range(left, right):
-            refPos = fm.resolve(row)
-            candidateStart = refPos - readPos # potential start of the read in reference
+            ref_pos = fm.resolve(row)
+            cand_start = ref_pos - read_pos # potential start of the read in reference
 
-            hits.append((candidateStart, readPos, refPos))
+            hits.append((cand_start, read_pos, ref_pos))
 
     return hits
 
