@@ -365,7 +365,7 @@ def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100,
             continue
 
         ref_window = reference[ref_win_start:ref_win_end]
-        alignment = banded_align(read, max_err_rate, ref_window, expected_start=cand_start - ref_win_start, band_width=margin)
+        alignment = banded_align(read, max_err_rate, ref_window, expected_start=cand_start - ref_win_start)
 
         if alignment is None:
             continue
@@ -381,6 +381,8 @@ def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100,
 
     if best_alignment is None:
         return None
+
+    start, end, dist = best_alignment
 
     if dist > max_err_rate * len(read): # too many errors
         return None
