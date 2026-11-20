@@ -192,21 +192,21 @@ def group_seed_hits(hits, max_spread, max_cands):
     left = 0 # index of first hit in the window; right last hit in the window
 
     for right in range(len(hits)):
-        start, readPos, refPos = hits[right]
-        counts[readPos] += 1
+        start, read_pos, ref_pos = hits[right]
+        counts[read_pos] += 1
 
         # Keep hits within max_spread
         # Delete previous analysed hits that are too far away already from
         # the newest hit position
         # they fall out of sliding window
         while start - hits[left][0] > max_spread:
-            oldReadPos = hits[left][1]
-            counts[oldReadPos] -= 1
+            old_read_pos = hits[left][1]
+            counts[old_read_pos] -= 1
 
             # removing seed from the dict that
             # does not have now any hits left in window
-            if counts[oldReadPos] == 0:
-                del counts[oldReadPos] 
+            if counts[old_read_pos] == 0:
+                del counts[old_read_pos] 
 
             left += 1
 
@@ -217,22 +217,22 @@ def group_seed_hits(hits, max_spread, max_cands):
     # Highest seed support first
     windows.sort(reverse=True)
 
-    candidates = []
+    cands = []
 
     for support, left, right in windows:
         # Median estimated start
         mid = (left + right) // 2
-        candidateStart = hits[mid][0]
+        cand_start = hits[mid][0]
 
         # Avoid reporting the same location repeatedly
-        if any(abs(candidateStart - pos) <= max_spread for pos, _ in candidates):
+        if any(abs(cand_start - pos) <= max_spread for pos, _ in cands):
             continue
 
-        candidates.append((candidateStart, support))
-        if len(candidates) >= max_cands:
+        cands.append((cand_start, support))
+        if len(cands) >= max_cands:
             break
 
-    return candidates
+    return cands
 
 # 3. Assessing the reads' hits
 
