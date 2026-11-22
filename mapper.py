@@ -8,12 +8,6 @@ import time
 import psutil
 import os
 
-process = psutil.Process(os.getpid())
-
-def report(stage, start):
-    elapsed = time.perf_counter() - start
-    ram = process.memory_info().rss / 1024**2
-    print(f"{stage}: {elapsed:.2f} s | RAM: {ram:.1f} MB", flush=True)
 
 import os
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
@@ -81,13 +75,9 @@ class FmIndex:
     def __init__(self, text, cpIval, ssaIval):
         text = (text.upper() + '$').encode('ascii')
 
-<<<<<<< Updated upstream
         print("Building suffix array...", flush=True)
         sa = direct_kark_sort(text)
         print("Suffix array constructed.", flush=True)
-=======
-        sa = direct_kark_sort(text)
->>>>>>> Stashed changes
 
         self.bwt = bwt_from_sa(text, sa)
         self.slen = len(text)
@@ -244,11 +234,7 @@ def group_seed_hits(hits, max_spread, max_cands):
 
 # 3. Assessing the reads' hits
 
-<<<<<<< Updated upstream
-def banded_align(read, max_err_rate, ref_win, expected_start, band_width=150):
-=======
 def banded_align(read, max_err_rate, ref_win, expected_start, band_width):
->>>>>>> Stashed changes
     """Align entire read to a substring of reference window.
     Return (start, end, editDistance) relative to refWindow.
     refWindow: fragment of the reference where read has hits.
@@ -318,33 +304,7 @@ def banded_align(read, max_err_rate, ref_win, expected_start, band_width):
         if cur_costs.min() > num_of_errors:
             return None
 
-<<<<<<< Updated upstream
-            if 0 <= p < len(prev_costs):
-                cost = prev_costs[p] + 1
-
-                if cost < best_cost:
-                    best_cost = cost
-                    best_start = prev_starts[p]
-
-            # Gap in read (move right from previous column)
-            if k > 0:
-                cost = cur_costs[k - 1] + 1
-
-                if cost < best_cost:
-                    best_cost = cost
-                    best_start = cur_starts[k - 1]
-
-            cur_costs[k] = best_cost
-            cur_starts[k] = best_start
-
-        # early stop if the best cost exceeds the allowed number of errors
-        if min(cur_costs) > num_of_errors:
-            return None
-
-        # Current row becomes previous row
-=======
         # current row becomes previous row for the next iteration
->>>>>>> Stashed changes
         prev_costs = cur_costs
         prev_starts = cur_starts
         prev_first_col = first_col
@@ -364,13 +324,8 @@ def banded_align(read, max_err_rate, ref_win, expected_start, band_width):
 
 # 4. Mapping a single read
 
-<<<<<<< Updated upstream
-def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100, 
-            max_spread=100, max_cands=10, margin=150, max_err_rate=0.2):
-=======
 def map_read(fm, reference, read, seed_len, step, max_hits,
              max_spread, max_cands, margin, max_err_rate, band_width):
->>>>>>> Stashed changes
 
     """Return (start, end) in reference for best alignment of read, or None if the read cannot be mapped."""
 
@@ -398,11 +353,7 @@ def map_read(fm, reference, read, seed_len, step, max_hits,
             continue
 
         ref_window = reference[ref_win_start:ref_win_end]
-<<<<<<< Updated upstream
-        alignment = banded_align(read, max_err_rate, ref_window, expected_start=cand_start - ref_win_start)
-=======
         alignment = banded_align(read, max_err_rate, ref_window, expected_start=cand_start - ref_win_start, band_width=band_width)
->>>>>>> Stashed changes
 
         if alignment is None:
             continue
@@ -426,10 +377,6 @@ def map_read(fm, reference, read, seed_len, step, max_hits,
 
     return start, end
 
-<<<<<<< Updated upstream
-=======
-
->>>>>>> Stashed changes
 def main():
     start = time.perf_counter()
 
@@ -450,45 +397,6 @@ def main():
     band_width = 150
 
     # 1. Read reference
-<<<<<<< Updated upstream
-    start = time.perf_counter()
-
-    record = SeqIO.read(args.reference, "fasta")
-    reference = str(record.seq).upper()
-
-    report("Reference loaded", start)
-
-
-    # 2. Build FM-index
-    start = time.perf_counter()
-
-    fm = FmIndex(reference, cpIval=128, ssaIval=32)
-
-    report("FM-index constructed", start)
-
-
-    # 3. Map reads, save output
-    start = time.perf_counter()
-
-    n_reads = 0
-    n_mapped = 0
-
-    with open(args.output, "w") as out_file:
-        for record in SeqIO.parse(args.reads, "fasta"):
-            n_reads += 1
-            read = str(record.seq).upper()
-
-            result = map_read(fm, reference, read)
-
-            if result is not None:
-                n_mapped += 1
-                res_start, res_end = result
-                out_file.write(f"{record.id}\t{res_start}\t{res_end}\n")
-
-    report("Mapping completed", start)
-
-    print(f"Mapped {n_mapped}/{n_reads} reads.")
-=======
     record = SeqIO.read(args.reference, "fasta")
     reference = str(record.seq).upper()
 
@@ -528,7 +436,6 @@ def main():
         f"({elapsed_time / n_reads:.2f} s/read)."
         if n_reads else "No reads found."
     )
->>>>>>> Stashed changes
     print(f"Results saved to {args.output}")
 
 
