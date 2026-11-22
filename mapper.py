@@ -1,9 +1,18 @@
-from KarkSand import direct_kark_sort
+from KarkSand_numpy_final import direct_kark_sort
 from array import array
 from collections import defaultdict
 from Bio import SeqIO
 import argparse
 import time
+import psutil
+import os
+
+process = psutil.Process(os.getpid())
+
+def report(stage, start):
+    elapsed = time.perf_counter() - start
+    ram = process.memory_info().rss / 1024**2
+    print(f"{stage}: {elapsed:.2f} s | RAM: {ram:.1f} MB", flush=True)
 
 
 # 1. Preparing reference genome - indexing
@@ -62,29 +71,20 @@ class FmIndex:
             for row, pos in enumerate(sa)
             if pos % n == 0
         }
+
     def __init__(self, text, cpIval, ssaIval):
-        start = time.perf_counter()
         text = (text.upper() + '$').encode('ascii')
-        print(f"Text preparation: {time.perf_counter() - start:.2f} s")
 
-        start = time.perf_counter()
+        print("Building suffix array...", flush=True)
         sa = direct_kark_sort(text)
-        print(f"Suffix array: {time.perf_counter() - start:.2f} s")
+        print("Suffix array constructed.", flush=True)
 
-        start = time.perf_counter()
         self.bwt = bwt_from_sa(text, sa)
         self.slen = len(text)
-        print(f"BWT: {time.perf_counter() - start:.2f} s")
 
-        start = time.perf_counter()
         self.ssa = self.downsample_sa(sa, ssaIval)
-        print(f"Sampled SA: {time.perf_counter() - start:.2f} s")
-
-        start = time.perf_counter()
         self.cps = FmCheckpoints(self.bwt, cpIval)
-        print(f"Checkpoints: {time.perf_counter() - start:.2f} s")
 
-        start = time.perf_counter()
         self.first = {}
         counts = {c: self.bwt.count(c) for c in set(self.bwt)}
 
@@ -92,8 +92,6 @@ class FmIndex:
         for c in sorted(counts):
             self.first[c] = total
             total += counts[c]
-
-        print(f"C array: {time.perf_counter() - start:.2f} s")
 
 
     def count(self, c):
@@ -236,7 +234,7 @@ def group_seed_hits(hits, max_spread, max_cands):
 
 # 3. Assessing the reads' hits
 
-def banded_align(read, ref_win, expected_start, band_width=150):
+def banded_align(read, max_err_rate, ref_win, expected_start, band_width=150):
     """Align entire read to a substring of reference window.
     Return (start, end, editDistance) relative to refWindow.
     refWindow: fragment of the reference where read has hits.
@@ -245,6 +243,8 @@ def banded_align(read, ref_win, expected_start, band_width=150):
     n = len(ref_win)
 
     inf = m + n + 1
+
+    num_of_errors = int(max_err_rate * m)
 
     # First DP row: free reference prefix
     prev_costs = [0] * (n + 1)
@@ -309,6 +309,10 @@ def banded_align(read, ref_win, expected_start, band_width=150):
             cur_costs[k] = best_cost
             cur_starts[k] = best_start
 
+        # early stop if the best cost exceeds the allowed number of errors
+        if min(cur_costs) > num_of_errors:
+            return None
+
         # Current row becomes previous row
         prev_costs = cur_costs
         prev_starts = cur_starts
@@ -327,98 +331,107 @@ def banded_align(read, ref_win, expected_start, band_width=150):
     return start, end, editDistance
 
 
+# 4. Mapping a single read
+
+def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100, 
+            max_spread=100, max_cands=10, margin=150, max_err_rate=0.2):
+
+    """Return (start, end) in reference for best alignment of read, or None if the read cannot be mapped."""
+
+    seeds = extract_seeds(read, seed_len, step)
+    hits = find_seed_hits(fm, seeds, max_hits)
+    candidates = group_seed_hits(hits, max_spread, max_cands)
+
+    if not candidates:
+        return None
+
+    best_support = candidates[0][1] # the highest number of seeds supporting a candidate
+    best_alignment = None
+
+    for cand_start, support in candidates:
+
+        # Skip candidates with too few supporting seeds
+        if support < best_support / 2:
+            continue
+
+        ref_win_start = max(0, cand_start - margin)
+        ref_win_end = min(len(reference), cand_start + len(read) + margin)
+
+        # If clamped reference window is smaller than the read, skip this candidate
+        if ref_win_end - ref_win_start < len(read):
+            continue
+
+        ref_window = reference[ref_win_start:ref_win_end]
+        alignment = banded_align(read, max_err_rate, ref_window, expected_start=cand_start - ref_win_start)
+
+        if alignment is None:
+            continue
+
+        start, end, dist = alignment
+
+        # moving into reference coordinates
+        start += ref_win_start
+        end += ref_win_start
+
+        if best_alignment is None or dist < best_alignment[2]:
+            best_alignment = (start, end, dist)
+
+    if best_alignment is None:
+        return None
+
+    start, end, dist = best_alignment
+
+    if dist > max_err_rate * len(read): # too many errors
+        return None
+
+    return start, end
+
 def main():
     parser = argparse.ArgumentParser(description="FM-index read mapper")
     parser.add_argument("reference", help="Reference genome FASTA")
     parser.add_argument("reads", help="Reads FASTA file")
+    parser.add_argument("output", help="Output file for read mapping results")
     args = parser.parse_args()
 
     # 1. Read reference
     start = time.perf_counter()
+
     record = SeqIO.read(args.reference, "fasta")
     reference = str(record.seq).upper()
-    print(f"Reading time: {time.perf_counter() - start:.2f} s")
+
+    report("Reference loaded", start)
+
 
     # 2. Build FM-index
     start = time.perf_counter()
+
     fm = FmIndex(reference, cpIval=128, ssaIval=32)
-    print(f"FM-index construction time: {time.perf_counter() - start:.2f} s")
 
-    # # 3. Process reads
-    # print(f"\nProcessing: {args.reads}")
+    report("FM-index constructed", start)
 
-    # seedTime = 0
-    # searchTime = 0
-    # groupTime = 0
 
-    # totalSeeds = 0
-    # totalHits = 0
-    # totalCandidates = 0
-    # readsWithCandidates = 0
-    # nReads = 0
+    # 3. Map reads, save output
+    start = time.perf_counter()
 
-    # startFile = time.perf_counter()
+    n_reads = 0
+    n_mapped = 0
 
-    # for record in SeqIO.parse(args.reads, "fasta"):
+    with open(args.output, "w") as out_file:
+        for record in SeqIO.parse(args.reads, "fasta"):
+            n_reads += 1
+            read = str(record.seq).upper()
 
-    #     nReads += 1
-    #     read = str(record.seq).upper()
+            result = map_read(fm, reference, read)
 
-    #     # Extract seeds
-    #     start = time.perf_counter()
-    #     seeds = extract_seeds(read, seedLen=20, step=20)
-    #     seedTime += time.perf_counter() - start
+            if result is not None:
+                n_mapped += 1
+                res_start, res_end = result
+                out_file.write(f"{record.id}\t{res_start}\t{res_end}\n")
 
-    #     # Search seed hits in FM-index
-    #     start = time.perf_counter()
-    #     hits = find_seed_hits(fm, seeds, maxHits=100)
-    #     searchTime += time.perf_counter() - start
+    report("Mapping completed", start)
 
-    #     # Group hits into candidate locations
-    #     start = time.perf_counter()
-    #     candidates = group_seed_hits(
-    #         hits,
-    #         maxSpread=100,
-    #         maxCandidates=10
-    #     )
-    #     groupTime += time.perf_counter() - start
-
-    #     # Statistics
-    #     totalSeeds += len(seeds)
-    #     totalHits += len(hits)
-    #     totalCandidates += len(candidates)
-
-    #     if candidates:
-    #         readsWithCandidates += 1
-
-    #     # Show examples
-    #     if nReads <= 3:
-    #         print(f"\nRead: {record.id}")
-    #         print(f"  Seeds: {len(seeds)}")
-    #         print(f"  Hits: {len(hits)}")
-    #         print(f"  Candidates: {candidates[:5]}")
-
-    #     # Progress
-    #     if nReads % 100 == 0:
-    #         print(f"Processed {nReads} reads")
-
-    # totalTime = time.perf_counter() - startFile
-
-    # # Summary
-    # print(f"\n--- Results: {args.reads} ---")
-    # print(f"Reads processed: {nReads}")
-    # print(f"Reads with candidates: {readsWithCandidates}")
-    # print(f"Total seeds: {totalSeeds}")
-    # print(f"Total hits: {totalHits}")
-    # print(f"Total candidates: {totalCandidates}")
-
-    # print(f"\nSeed extraction: {seedTime:.3f} s")
-    # print(f"FM-index searching: {searchTime:.3f} s")
-    # print(f"Grouping: {groupTime:.3f} s")
-    # print(f"Total read processing: {totalTime:.3f} s")
-
-    # if nReads:
-    #     print(f"Average per read: {totalTime / nReads:.4f} s")
+    print(f"Mapped {n_mapped}/{n_reads} reads.")
+    print(f"Results saved to {args.output}")
 
 
 if __name__ == "__main__":
