@@ -432,7 +432,7 @@ def main():
 
     print(
         f"Mapped {n_mapped}/{n_reads} reads in {elapsed_time:.2f} s "
-        f"({elapsed_time / n_reads:.2f} s/read)."
+        f"({elapsed_time / max(n_reads, 1):.2f} s/read)."
         if n_reads else "No reads found."
     )
     print(f"Results saved to {args.output}")
