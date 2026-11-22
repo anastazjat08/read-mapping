@@ -1,4 +1,5 @@
-"""Karkkainen-Sanders (DC3) suffix array construction with NumPy."""
+"""Karkkainen-Sanders (DC3) suffix array construction with NumPy.
+# adapted from https://code.google.com/archive/p/pysuffix/"""
 
 import os
 
@@ -27,7 +28,7 @@ def direct_kark_sort(s):
 
 def kark_sort(s):
     """ Build the suffix array
-        s(str/bytes): reference sequence"""
+        s(int32 array): reference sequence"""
     s = np.asarray(s, dtype=np.int32)
     n = len(s)
     # when in recurrence we get to the end
