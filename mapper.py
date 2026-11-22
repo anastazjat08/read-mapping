@@ -1,5 +1,6 @@
 from KarkSand_numpy_final import direct_kark_sort
 from array import array
+import numpy as np
 from collections import defaultdict
 from Bio import SeqIO
 import argparse
@@ -13,6 +14,11 @@ def report(stage, start):
     elapsed = time.perf_counter() - start
     ram = process.memory_info().rss / 1024**2
     print(f"{stage}: {elapsed:.2f} s | RAM: {ram:.1f} MB", flush=True)
+
+import os
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+             "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[_var] = "1"
 
 
 # 1. Preparing reference genome - indexing
@@ -75,9 +81,13 @@ class FmIndex:
     def __init__(self, text, cpIval, ssaIval):
         text = (text.upper() + '$').encode('ascii')
 
+<<<<<<< Updated upstream
         print("Building suffix array...", flush=True)
         sa = direct_kark_sort(text)
         print("Suffix array constructed.", flush=True)
+=======
+        sa = direct_kark_sort(text)
+>>>>>>> Stashed changes
 
         self.bwt = bwt_from_sa(text, sa)
         self.slen = len(text)
@@ -234,21 +244,32 @@ def group_seed_hits(hits, max_spread, max_cands):
 
 # 3. Assessing the reads' hits
 
+<<<<<<< Updated upstream
 def banded_align(read, max_err_rate, ref_win, expected_start, band_width=150):
+=======
+def banded_align(read, max_err_rate, ref_win, expected_start, band_width):
+>>>>>>> Stashed changes
     """Align entire read to a substring of reference window.
     Return (start, end, editDistance) relative to refWindow.
     refWindow: fragment of the reference where read has hits.
+
+    One NumPy pass per read position; costs and starts are kept in separate arrays.
     """
+
+    r = np.frombuffer(read.encode("ascii"), dtype=np.uint8) # sequence to table of ints; without copying
+    g = np.frombuffer(ref_win.encode("ascii"), dtype=np.uint8)
+
     m = len(read)
     n = len(ref_win)
 
-    inf = m + n + 1
+    inf = np.int64(m + n + 1)
+    num_of_errors = int(max_err_rate * m)
 
     num_of_errors = int(max_err_rate * m)
 
     # First DP row: free reference prefix
-    prev_costs = [0] * (n + 1)
-    prev_starts = list(range(n + 1))  # Starts of the subalignments
+    prev_costs = np.zeros(n+1, dtype=np.int32)  # cost of aligning read prefix to empty reference
+    prev_starts = np.arange(n+1, dtype=np.int32)  # Starts of the subalignments
     prev_first_col = 0  # First column of the previous DP row
 
     for i in range(1, m + 1):
@@ -263,34 +284,41 @@ def banded_align(read, max_err_rate, ref_win, expected_start, band_width=150):
             return None
 
         # Costs and starting positions for the current DP row
-        cur_costs = [inf] * (last_col - first_col + 1)
-        cur_starts = [-1] * (last_col - first_col + 1)
+        cur_costs = np.full(last_col - first_col + 1, inf, dtype=np.int32)
+        cur_starts = np.full(last_col - first_col + 1, -1, dtype=np.int32)
 
-        for j in range(first_col, last_col + 1):
-            k = j - first_col  # Index in cur_costs and cur_starts
+        # Match or mismatch (diagonal)
+        j = max(first_col, prev_first_col + 1) # first column that has a diagonal
+        k = j - first_col # index in current row
+        p = j - 1 - prev_first_col # index in previous row
+        size = last_col - j + 1
 
-            # Align read prefix to empty reference
-            if j == 0:
-                cur_costs[k] = i  # Number of deletions
-                cur_starts[k] = 0
-                continue
+        cur_costs[k:] = prev_costs[p:p + size] + (r[i - 1] != g[j - 1:last_col])
+        cur_starts[k:] = prev_starts[p:p+size]
 
-            best_cost = inf
-            best_start = -1
+        # gap in reference (move down from previous row)
+        p = first_col - prev_first_col
+        cost = prev_costs[p:p+len(cur_costs)] + 1
+        size = len(cost)
 
-            # Match or mismatch (diagonal)
-            p = j - 1 - prev_first_col  # Index in previous row lists
+        better = cost < cur_costs[:size]
+        cur_costs[:size][better] = cost[better]
+        cur_starts[:size][better] = prev_starts[p:p+size][better]
 
-            if 0 <= p < len(prev_costs):
-                cost = prev_costs[p] + (read[i - 1] != ref_win[j - 1])
+        # Gap in read (move right from previous column)
+        k = np.arange(len(cur_costs), dtype=np.int32)
+        cost = cur_costs - k
+        best_cost = np.minimum.accumulate(cost)
+        best_k = np.maximum.accumulate(np.where(cost == best_cost, k, 0)) # where the gap begins
 
-                if cost < best_cost:
-                    best_cost = cost
-                    best_start = prev_starts[p]
+        cur_costs = best_cost + k
+        cur_starts = cur_starts[best_k]
 
-            # Gap in reference (move down from previous row)
-            p = j - prev_first_col
+        # early stop if the best cost in this row exceeds the allowed number of errors
+        if cur_costs.min() > num_of_errors:
+            return None
 
+<<<<<<< Updated upstream
             if 0 <= p < len(prev_costs):
                 cost = prev_costs[p] + 1
 
@@ -314,27 +342,35 @@ def banded_align(read, max_err_rate, ref_win, expected_start, band_width=150):
             return None
 
         # Current row becomes previous row
+=======
+        # current row becomes previous row for the next iteration
+>>>>>>> Stashed changes
         prev_costs = cur_costs
         prev_starts = cur_starts
         prev_first_col = first_col
 
     # Best alignment endpoint: free reference suffix
-    best_idx = prev_costs.index(min(prev_costs))
+    best_idx = int(prev_costs.argmin())
 
     if prev_costs[best_idx] >= inf:
         return None
 
-    start = prev_starts[best_idx]
+    start = int(prev_starts[best_idx])
     end = prev_first_col + best_idx
-    editDistance = prev_costs[best_idx]
+    editDistance = int(prev_costs[best_idx])   
 
     return start, end, editDistance
 
 
 # 4. Mapping a single read
 
+<<<<<<< Updated upstream
 def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100, 
             max_spread=100, max_cands=10, margin=150, max_err_rate=0.2):
+=======
+def map_read(fm, reference, read, seed_len, step, max_hits,
+             max_spread, max_cands, margin, max_err_rate, band_width):
+>>>>>>> Stashed changes
 
     """Return (start, end) in reference for best alignment of read, or None if the read cannot be mapped."""
 
@@ -362,7 +398,11 @@ def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100,
             continue
 
         ref_window = reference[ref_win_start:ref_win_end]
+<<<<<<< Updated upstream
         alignment = banded_align(read, max_err_rate, ref_window, expected_start=cand_start - ref_win_start)
+=======
+        alignment = banded_align(read, max_err_rate, ref_window, expected_start=cand_start - ref_win_start, band_width=band_width)
+>>>>>>> Stashed changes
 
         if alignment is None:
             continue
@@ -386,14 +426,31 @@ def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100,
 
     return start, end
 
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
 def main():
+    start = time.perf_counter()
+
     parser = argparse.ArgumentParser(description="FM-index read mapper")
     parser.add_argument("reference", help="Reference genome FASTA")
     parser.add_argument("reads", help="Reads FASTA file")
     parser.add_argument("output", help="Output file for read mapping results")
     args = parser.parse_args()
 
+    # Mapping parameters - step20 configuration
+    seed_len = 15
+    step = 20
+    max_hits = 100
+    max_spread = 100
+    max_cands = 10
+    margin = 150
+    max_err_rate = 0.2
+    band_width = 150
+
     # 1. Read reference
+<<<<<<< Updated upstream
     start = time.perf_counter()
 
     record = SeqIO.read(args.reference, "fasta")
@@ -431,6 +488,47 @@ def main():
     report("Mapping completed", start)
 
     print(f"Mapped {n_mapped}/{n_reads} reads.")
+=======
+    record = SeqIO.read(args.reference, "fasta")
+    reference = str(record.seq).upper()
+
+    # 2. Build FM-index
+    fm = FmIndex(reference, cpIval=128, ssaIval=32)
+
+    # 3. Map reads and save output
+    n_reads = 0
+    n_mapped = 0
+
+    with open(args.output, "w") as out_file:
+        for record in SeqIO.parse(args.reads, "fasta"):
+            n_reads += 1
+            read = str(record.seq).upper()
+
+            result = map_read(
+                fm, reference, read,
+                seed_len=seed_len,
+                step=step,
+                max_hits=max_hits,
+                max_spread=max_spread,
+                max_cands=max_cands,
+                margin=margin,
+                max_err_rate=max_err_rate,
+                band_width=band_width
+            )
+
+            if result is not None:
+                n_mapped += 1
+                res_start, res_end = result
+                out_file.write(f"{record.id}\t{res_start}\t{res_end}\n")
+
+    elapsed_time = time.perf_counter() - start
+
+    print(
+        f"Mapped {n_mapped}/{n_reads} reads in {elapsed_time:.2f} s "
+        f"({elapsed_time / n_reads:.2f} s/read)."
+        if n_reads else "No reads found."
+    )
+>>>>>>> Stashed changes
     print(f"Results saved to {args.output}")
 
 
