@@ -1,10 +1,10 @@
-from KarkSand_numpy_final import direct_kark_sort
+from KarkSand import direct_kark_sort
 from array import array
 import numpy as np
 from collections import defaultdict
 from Bio import SeqIO
 import argparse
-import time
+import time 
 import os
 
 
