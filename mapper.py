@@ -1,22 +1,28 @@
-from prefixdoubling import build_suffix_array_numpy
-from KarkSand_numpy import direct_kark_sort
+import psutil
+
+from KarkSand import direct_kark_sort
 from array import array
 from collections import defaultdict
 from Bio import SeqIO
 import argparse
 import time
 
+import os
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+             "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[_var] = "1"
+import numpy as np
+
+process = psutil.Process(os.getpid())
 
 # 1. Preparing reference genome - indexing
 
 def bwt_from_sa(text, sa):
-    """Build BWT from text and suffix array."""
-    bwt = bytearray(len(text))
-
-    for i, pos in enumerate(sa):
-        bwt[i] = text[pos - 1] if pos > 0 else ord('$')
-
-    return bytes(bwt)
+    """Build BWT from text and suffix array (int32 NumPy array).
+    BWT[i] = text[sa[i] - 1]; for sa[i] == 0 the index -1 wraps to the last char '$'."""
+    
+    text_arr = np.frombuffer(text, dtype=np.uint8)
+    return text_arr[sa - 1].tobytes()
 
 
 class FmCheckpoints:
@@ -24,21 +30,19 @@ class FmCheckpoints:
 
     def __init__(self, bwt, cpIval):
         self.bwt = bwt
-        self.cpIval = cpIval #space between checkpoints
-        self.alphabet = sorted(set(bwt))
-        # array for each letter
-        # 'I' means integer, here we represent letters as integers (ASCII - bytes)
-        self.cps = {c: array('I', [0]) for c in self.alphabet}
+        self.cpIval = cpIval
+        bwt_arr = np.frombuffer(bwt, dtype=np.uint8)
+        self.alphabet = np.flatnonzero(np.bincount(bwt_arr, minlength=256)).tolist()
 
-        counts = {c: 0 for c in self.alphabet} # for saving/updating counts in cps after cpIval positions
-
-        for i, c in enumerate(bwt, 1):
-            counts[c] += 1
-
-            # update the checkpoints dictionary
-            if i % cpIval == 0:
-                for letter in self.alphabet:
-                    self.cps[letter].append(counts[letter])
+        # cps[c][k] = occurrences of c in bwt[0 : k*cpIval]
+        n_blocks = len(bwt_arr) // cpIval
+        full = bwt_arr[:n_blocks * cpIval].reshape(n_blocks, cpIval)
+        self.cps = {}
+        for c in self.alphabet:
+            per_block = np.count_nonzero(full == c, axis=1) # count of c in each block
+            cps = np.zeros(n_blocks + 1, dtype=np.uint32)
+            np.cumsum(per_block, out=cps[1:]) # count up to each block, with leading 0
+            self.cps[c] = array('I', cps.tobytes()) # 'I' means integer, here we represent letters as integers (ASCII - bytes)
 
 
     def rank(self, c, pos):
@@ -58,43 +62,27 @@ class FmIndex:
         """ Take only the suffix-array entries for every nth suffix.
             Sample SA entries by reference position.
             To save memory."""
-        return {
-            row: pos
-            for row, pos in enumerate(sa)
-            if pos % n == 0
-        }
+        rows = np.flatnonzero(sa % n == 0) # rows whose reference position is divisible by n
+        return dict(zip(rows.tolist(), sa[rows].tolist())) # {row : pos} dict
+    
     def __init__(self, text, cpIval, ssaIval):
-        start = time.perf_counter()
         text = (text.upper() + '$').encode('ascii')
-        print(f"Text preparation: {time.perf_counter() - start:.2f} s")
+        sa = direct_kark_sort(text)
 
-        start = time.perf_counter()
-        sa = build_suffix_array_numpy(text)
-        print(f"Suffix array: {time.perf_counter() - start:.2f} s")
-
-        start = time.perf_counter()
         self.bwt = bwt_from_sa(text, sa)
         self.slen = len(text)
-        print(f"BWT: {time.perf_counter() - start:.2f} s")
 
-        start = time.perf_counter()
         self.ssa = self.downsample_sa(sa, ssaIval)
-        print(f"Sampled SA: {time.perf_counter() - start:.2f} s")
-
-        start = time.perf_counter()
+        del sa # free memory
         self.cps = FmCheckpoints(self.bwt, cpIval)
-        print(f"Checkpoints: {time.perf_counter() - start:.2f} s")
 
-        start = time.perf_counter()
         self.first = {}
-        counts = {c: self.bwt.count(c) for c in set(self.bwt)}
+        counts = np.bincount(np.frombuffer(self.bwt, dtype=np.uint8), minlength=256) # count occurrences of each ASCII character
 
         total = 0
-        for c in sorted(counts):
+        for c in np.flatnonzero(counts).tolist():
             self.first[c] = total
-            total += counts[c]
-
-        print(f"C array: {time.perf_counter() - start:.2f} s")
+            total += int(counts[c])
 
 
     def count(self, c):
@@ -241,17 +229,22 @@ def banded_align(read, max_err_rate, ref_win, expected_start, band_width=150):
     """Align entire read to a substring of reference window.
     Return (start, end, editDistance) relative to refWindow.
     refWindow: fragment of the reference where read has hits.
+
+    One NumPy pass per read position; costs and starts are kept in separate arrays.
     """
+
+    r = np.frombuffer(read.encode("ascii"), dtype=np.uint8)
+    g = np.frombuffer(ref_win.encode("ascii"), dtype=np.uint8)
+
     m = len(read)
     n = len(ref_win)
 
-    inf = m + n + 1
-
+    inf = np.int64(m + n + 1)
     num_of_errors = int(max_err_rate * m)
 
     # First DP row: free reference prefix
-    prev_costs = [0] * (n + 1)
-    prev_starts = list(range(n + 1))  # Starts of the subalignments
+    prev_costs = np.zeros(n+1, dtype=np.int32)  # cost of aligning read prefix to empty reference
+    prev_starts = np.arange(n+1, dtype=np.int32)  # Starts of the subalignments
     prev_first_col = 0  # First column of the previous DP row
 
     for i in range(1, m + 1):
@@ -266,70 +259,54 @@ def banded_align(read, max_err_rate, ref_win, expected_start, band_width=150):
             return None
 
         # Costs and starting positions for the current DP row
-        cur_costs = [inf] * (last_col - first_col + 1)
-        cur_starts = [-1] * (last_col - first_col + 1)
+        cur_costs = np.full(last_col - first_col + 1, inf, dtype=np.int32)
+        cur_starts = np.full(last_col - first_col + 1, -1, dtype=np.int32)
 
-        for j in range(first_col, last_col + 1):
-            k = j - first_col  # Index in cur_costs and cur_starts
+        # Match or mismatch (diagonal)
+        j = max(first_col, prev_first_col + 1) # first column that has a diagonal
+        k = j - first_col # index in current row
+        p = j - 1 - prev_first_col # index in previous row
+        size = last_col - j + 1
 
-            # Align read prefix to empty reference
-            if j == 0:
-                cur_costs[k] = i  # Number of deletions
-                cur_starts[k] = 0
-                continue
+        cur_costs[k:] = prev_costs[p:p + size] + (r[i - 1] != g[j - 1:last_col])
+        cur_starts[k:] = prev_starts[p:p+size]
 
-            best_cost = inf
-            best_start = -1
+        # gap in reference (move down from previous row)
+        p = first_col - prev_first_col
+        cost = prev_costs[p:p+len(cur_costs)] + 1
+        size = len(cost)
 
-            # Match or mismatch (diagonal)
-            p = j - 1 - prev_first_col  # Index in previous row lists
+        better = cost < cur_costs[:size]
+        cur_costs[:size][better] = cost[better]
+        cur_starts[:size][better] = prev_starts[p:p+size][better]
 
-            if 0 <= p < len(prev_costs):
-                cost = prev_costs[p] + (read[i - 1] != ref_win[j - 1])
+        # Gap in read (move right from previous column)
+        k = np.arange(len(cur_costs), dtype=np.int32)
+        cost = cur_costs - k
+        best_cost = np.minimum.accumulate(cost)
+        best_k = np.maximum.accumulate(np.where(cost == best_cost, k, 0)) # where the gap begins
 
-                if cost < best_cost:
-                    best_cost = cost
-                    best_start = prev_starts[p]
+        cur_costs = best_cost + k
+        cur_starts = cur_starts[best_k]
 
-            # Gap in reference (move down from previous row)
-            p = j - prev_first_col
-
-            if 0 <= p < len(prev_costs):
-                cost = prev_costs[p] + 1
-
-                if cost < best_cost:
-                    best_cost = cost
-                    best_start = prev_starts[p]
-
-            # Gap in read (move right from previous column)
-            if k > 0:
-                cost = cur_costs[k - 1] + 1
-
-                if cost < best_cost:
-                    best_cost = cost
-                    best_start = cur_starts[k - 1]
-
-            cur_costs[k] = best_cost
-            cur_starts[k] = best_start
-
-        # early stop if the best cost exceeds the allowed number of errors
-        if min(cur_costs) > num_of_errors:
+        # early stop if the best cost in this row exceeds the allowed number of errors
+        if cur_costs.min() > num_of_errors:
             return None
 
-        # Current row becomes previous row
+        # current row becomes previous row for the next iteration
         prev_costs = cur_costs
         prev_starts = cur_starts
         prev_first_col = first_col
 
     # Best alignment endpoint: free reference suffix
-    best_idx = prev_costs.index(min(prev_costs))
+    best_idx = int(prev_costs.argmin())
 
     if prev_costs[best_idx] >= inf:
         return None
 
-    start = prev_starts[best_idx]
+    start = int(prev_starts[best_idx])
     end = prev_first_col + best_idx
-    editDistance = prev_costs[best_idx]
+    editDistance = int(prev_costs[best_idx])   
 
     return start, end, editDistance
 
@@ -390,6 +367,7 @@ def map_read(fm, reference, read, seed_len=15, step=10, max_hits=100,
     return start, end
 
 def main():
+    start = time.perf_counter()
     parser = argparse.ArgumentParser(description="FM-index read mapper")
     parser.add_argument("reference", help="Reference genome FASTA")
     parser.add_argument("reads", help="Reads FASTA file")
@@ -397,18 +375,13 @@ def main():
     args = parser.parse_args()
 
     # 1. Read reference
-    start = time.perf_counter()
     record = SeqIO.read(args.reference, "fasta")
     reference = str(record.seq).upper()
-    print(f"Reading time: {time.perf_counter() - start:.2f} s")
 
     # 2. Build FM-index
-    start = time.perf_counter()
     fm = FmIndex(reference, cpIval=128, ssaIval=32)
-    print(f"FM-index construction time: {time.perf_counter() - start:.2f} s")
 
     # 3. Map reads, save output
-    start = time.perf_counter()
     n_reads = 0
     n_mapped = 0
     
@@ -423,8 +396,9 @@ def main():
                 res_start, res_end = result
                 out_file.write(f"{record.id}\t{res_start}\t{res_end}\n")
 
-        elapsed = time.perf_counter() - start
-        print(f"Mapped {n_mapped}/{n_reads} reads in {elapsed:.2f} s ({elapsed/n_reads:.2f} s/read)")
+    elapsed_time = time.perf_counter() - start
+    print(f"Mapped {n_mapped}/{n_reads} reads in {elapsed_time:.2f} s ({(elapsed_time)/n_reads:.2f} s/read).")
+    print(f"Results saved to {args.output}")
 
 
 if __name__ == "__main__":
